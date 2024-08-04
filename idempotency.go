@@ -31,7 +31,20 @@ func NewIdempotencyKey(conn *redis.Conn, revalidateCache bool, separator string)
 	}
 }
 
-func (ik IdempotencyKey) CreateIdempotencyKey(ctx context.Context, TTL time.Duration, actionName string, args ...string) (string, bool) {
+func (ik IdempotencyKey) Once(ctx context.Context, fn func(ctx context.Context) error, TTL time.Duration, actionName string, args ...string) error {
+	key, alreadyExist := ik.createIdempotencyKey(ctx, TTL, actionName, args...)
+
+	if !alreadyExist {
+		if err := fn(ctx); err != nil {
+			ik.rollback(ctx, key)
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (ik IdempotencyKey) createIdempotencyKey(ctx context.Context, TTL time.Duration, actionName string, args ...string) (string, bool) {
 	var key string
 	key = "idempotency" + ik.separator
 	key += actionName
@@ -70,12 +83,8 @@ func (ik IdempotencyKey) alreadyExecuted(ctx context.Context, key string, TTL ti
 	return true
 }
 
-func (ik IdempotencyKey) Commit(ctx context.Context, keys []string) {
-	for i := range keys {
-		if keys[i] != "" {
-			if err := ik.redisClient.Del(ctx, keys[i]).Err(); err != nil {
-				ik.logger.Error("", "commit error", err)
-			}
-		}
+func (ik IdempotencyKey) rollback(ctx context.Context, key string) {
+	if err := ik.redisClient.Del(ctx, key).Err(); err != nil {
+		ik.logger.Error("", "commit error", err)
 	}
 }
